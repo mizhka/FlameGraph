@@ -94,6 +94,27 @@ function get_perf_captured_variable(variable)
 }
 
 #
+# Match command and pid in case of sched_switch on perf 5.3. For example
+# the following line, get_switchcommand() would return "postgres" and 
+# get_switchpid(comm) would return "23028":
+#     postgres 23028/23028  9821.742684:       sched:sched_switch: postgres:23028 [120] S ==> swapper/1:0 [120]
+# 
+function get_switchcommand()
+{
+	variable = "sched:sched_switch: "
+	match($0, variable "[^[:space:]]+:")
+	return substr($0, RSTART + length(variable),
+                      RLENGTH - length(variable) - 1)
+}
+function get_switchpid(comm)
+{
+	variable = "sched:sched_switch: "
+	match($0, variable comm":[^[:space:]]+")
+	return substr($0, RSTART + length(variable) + length(comm) + 1,
+                      RLENGTH - length(variable) - length(comm) - 1)
+}
+
+#
 # The timestamp is the first field that ends in a colon, e.g.:
 #
 #     swapper     0 [006] 708189.626415: sched:sched_stat_sleep: comm=memsqld pid=27235 delay=100078421 [ns
@@ -108,11 +129,23 @@ function get_perf_timestamp()
 	return substr($0, RSTART + 1, RLENGTH - 2)
 }
 
-!/^#/ && /sched:sched_switch/ {
+!/^#/ && /sched:sched_switch: comm=/ {
 	switchcommand = get_perf_captured_variable("comm")
 
 	switchpid = get_perf_captured_variable("prev_pid")
 
+	switchtime=get_perf_timestamp()
+
+	switchstack=""
+}
+
+#
+# Perf 5.3 provides different format for sched_switch event, for instance:
+#   postgres 23028/23028  9821.742684:       sched:sched_switch: postgres:23028 [120] S ==> swapper/1:0 [120]
+#
+!/^#/ && /sched:sched_switch/ && !/sched:sched_switch: comm=/ {
+	switchcommand = get_switchcommand()
+	switchpid = get_switchpid(switchcommand)
 	switchtime=get_perf_timestamp()
 
 	switchstack=""
@@ -135,7 +168,7 @@ function get_function_name()
 	return funcname
 }
 
-(switchpid != 0 && /^\s/) {
+(switchpid != 0 && /^\t/) {
 	if (switchstack == "")  {
 		switchstack = get_function_name()
 	} else {
@@ -168,7 +201,7 @@ function get_function_name()
 	wakestack=""
 }
 
-(stat_next_pid != 0 && /^\s/) {
+(stat_next_pid != 0 && /^\t/) {
 	if (wakestack == "") {
 		wakestack = get_function_name()
 	} else {
